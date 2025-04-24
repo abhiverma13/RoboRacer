@@ -127,8 +127,16 @@ class AutoDriveNode(Node):
     ############
     def detected_sign_callback(self, msg: String):
         """
-        Each message from object_detection_node is of the form "Label|Distance".
-        We'll parse the label, parse the distance, then trigger or schedule the action.
+        Parses sign detection messages and updates timers for corresponding actions.
+
+        Preconditions:
+            - msg is a ROS2 String message formatted as 'Label|Distance'.
+
+        Postconditions:
+            - If label is valid and distance is parsable, schedules a sign-triggered action.
+
+        Rep invariant:
+            - self.object_timer_end[label] is updated only if label has not already been scheduled.
         """
         data = msg.data
         # e.g. "Stop|1.52", "U-Turn|4.30", "Limit-20|2.10"
@@ -148,8 +156,17 @@ class AutoDriveNode(Node):
 
     def update_object_timer(self, label, distance):
         """
-        We estimate time to reach the object based on average speed & distance minus threshold.
-        Then we store it in object_timer_end so check_object_timers() can handle it at the correct time.
+        Computes time-to-reach for a detected object and schedules its action trigger time.
+
+        Preconditions:
+            - label is a valid trigger label.
+            - distance is a non-negative float.
+
+        Postconditions:
+            - self.object_timer_end[label] contains a future timestamp when action should trigger.
+
+        Rep invariant:
+            - object_timer_end only includes future timestamps.
         """
         # Average speed from history (or default)
         if len(self.speed_history) > 0:
@@ -176,7 +193,16 @@ class AutoDriveNode(Node):
        
     def check_object_timers(self):
         """
-        Periodically check if any label's timer has expired. Then trigger the appropriate action.
+        Checks if any object action timers have expired and triggers actions.
+
+        Preconditions:
+            - self.object_timer_end contains valid label-time mappings.
+
+        Postconditions:
+            - Expired timers are removed and corresponding actions are triggered.
+
+        Rep invariant:
+            - No expired labels remain in object_timer_end after this call.
         """
         current_time = self.get_clock().now().nanoseconds / 1e9
         to_trigger = [lbl for lbl, end_t in self.object_timer_end.items() if current_time >= end_t]
@@ -187,7 +213,16 @@ class AutoDriveNode(Node):
 
     def trigger_object_action(self, label):
         """
-        Called when the timer for a certain sign has elapsed, meaning we've 'reached' it and must act.
+        Executes the action associated with a sign label after its timer expires.
+
+        Preconditions:
+            - label is in self.label_cooldowns.
+
+        Postconditions:
+            - Sign action is executed if not in cooldown, and last_triggered_time[label] is updated.
+
+        Rep invariant:
+            - last_triggered_time[label] reflects most recent valid execution time.
         """
         current_time = self.get_clock().now().nanoseconds / 1e9
         cooldown = self.label_cooldowns.get(label, 10.0)  # default to 10.0 if not found
@@ -234,7 +269,16 @@ class AutoDriveNode(Node):
 
     def scan_callback(self, scan_msg):
         """
-        Main callback for gap-following logic, used when not in U-turn mode.
+        Main logic for processing LiDAR scans and controlling steering/speed.
+
+        Preconditions:
+            - scan_msg is a valid LaserScan message.
+
+        Postconditions:
+            - Steering and speed commands are published based on gap following or U-turn.
+
+        Rep invariant:
+            - No control command is sent if emergency stop is active.
         """
         # If we're in the middle of a U-turn, handle that instead
         if self.u_turn_active:
@@ -281,6 +325,18 @@ class AutoDriveNode(Node):
         self.check_object_timers()
     
     def safety_stop(self, ranges) -> bool:
+        """
+        Checks if an obstacle is too close and stops the vehicle if needed.
+
+        Preconditions:
+            - ranges is a valid list of floats representing distances.
+
+        Postconditions:
+            - Vehicle is stopped if an obstacle is detected directly ahead within threshold.
+
+        Rep invariant:
+            - stop flag is set to True if emergency stop is triggered.
+        """
         midpoint = len(ranges) // 2
         for i in range(midpoint-5, midpoint+5):
             if ranges[i] < 0.3:
@@ -291,6 +347,18 @@ class AutoDriveNode(Node):
         return False
     
     def new_safety_stop(self, scan_msg, ranges, start_index, end_index) -> bool:
+        """
+        Performs additional safety checks based on the largest gap's average distance and width.
+        
+        Preconditions:
+          - scan_msg is a valid LaserScan message.
+          - ranges is a preprocessed list of LiDAR distances.
+          - start_index and end_index define a contiguous gap.
+        
+        Postconditions:
+          - If the average distance or width (converted to angle steps) falls below a threshold, triggers an emergency stop.
+          - Returns True if an emergency stop was triggered; otherwise, returns False.
+        """
         largest_gap_average_distance = np.max(ranges[start_index:end_index])
         largest_gap_size = end_index - start_index
 
@@ -318,6 +386,17 @@ class AutoDriveNode(Node):
         return False
     
     def publish_control(self, angle, speed):
+        """
+        Publishes the control message with the given steering angle and speed.
+        
+        Preconditions:
+          - angle is the computed steering angle (in radians).
+          - speed is the desired speed (float).
+        
+        Postconditions:
+          - Publishes an AckermannDriveStamped message.
+          - Updates internal speed history and adjusts the safety stop threshold based on average speed.
+        """
         new_msg = AckermannDriveStamped()
         new_msg.drive.speed = speed
         new_msg.drive.steering_angle = angle
@@ -355,7 +434,16 @@ class AutoDriveNode(Node):
 
     def get_speed(self):
         """
-        Returns the speed based on sign triggers (20 or 100).
+        Returns the target driving speed based on the latest speed limit sign.
+
+        Preconditions:
+            - speed_20 and speed_100 are boolean flags indicating active limits.
+
+        Postconditions:
+            - Returns 0.7, 1.3, or 1.0 depending on flags.
+
+        Rep invariant:
+            - Only one of speed_20 or speed_100 should be True at a time.
         """
         if self.speed_20:
             return 0.7
@@ -366,7 +454,18 @@ class AutoDriveNode(Node):
 
     def preprocess_lidar_scan(self, scan_msg):
         """
-        Pre-process the LiDAR data to truncate the range, filter out NaNs and limit the range distance.
+        Preprocesses LiDAR scan data by truncating the scan to a limited angle, filtering out NaNs,
+        and clamping distances to a maximum value.
+        
+        Preconditions:
+          - scan_msg is a valid LaserScan message containing ranges, angle_min, angle_max.
+        
+        Postconditions:
+          - Returns a list of filtered and smoothed range values.
+        
+        Rep invariants:
+          - The returned list length corresponds to the truncated window minus the window used for smoothing.
+          - No value in the returned list exceeds 10.0.
         """
         if not self.isTruncated:
             total_range = len(scan_msg.ranges)
@@ -394,7 +493,15 @@ class AutoDriveNode(Node):
 
     def draw_safety_bubble(self, ranges, center_index):
         """
-        Zero out points within the bubble radius around the closest point.
+        Zeros out points within a safety bubble radius around the closest obstacle.
+        
+        Preconditions:
+          - ranges is a list of float values representing LiDAR distances.
+          - center_index is a valid index in ranges.
+        
+        Postconditions:
+          - The value at center_index is set to 0.0.
+          - Neighboring values within the distance (center_distance + bubble_radius) are also set to 0.0.
         """
         center_distance = ranges[center_index]
         ranges[center_index] = 0.0
@@ -413,7 +520,16 @@ class AutoDriveNode(Node):
 
     def find_max_gap(self, ranges):
         """
-        Find the largest contiguous sequence of values greater than min_gap_distance.
+        Finds the largest contiguous sequence of range values that exceed a minimum gap distance.
+        
+        Preconditions:
+          - ranges is a list of floats representing preprocessed distances.
+        
+        Postconditions:
+          - Returns a tuple (start_index, end_index) corresponding to the maximum gap interval.
+        
+        Rep invariant:
+          - For all indices in the returned interval, each value is greater than min_gap_distance.
         """
         max_start, max_size = 0, 0
         current_start, current_size = 0, 0
@@ -442,9 +558,17 @@ class AutoDriveNode(Node):
     
     def pid_control(self, error):
         """
-        Compute the steering angle from error.
+        Computes a steering angle using a PID controller.
+        
+        Preconditions:
+          - error is a float representing the difference (in radians) between the desired and current angle.
+        
+        Postconditions:
+          - Returns a steering angle in radians, clipped to ±90°.
+        
+        Rep invariant:
+          - The PID integral and previous error are updated consistently with each call.
         """
-
         # Integral
         self.pid_integral += error * self.dt
 
@@ -482,6 +606,18 @@ class AutoDriveNode(Node):
     ############
 
     def odom_callback(self, msg: Odometry):
+        """
+        Updates the car's current yaw, position, and linear speed using odometry data.
+
+        Preconditions:
+            - msg is a valid Odometry message containing quaternion and velocity information.
+
+        Postconditions:
+            - self.current_yaw, self.current_position_x, self.current_position_y, and self.speed_odom are updated.
+
+        Rep invariant:
+            - Orientation and position variables reflect latest odometry reading.
+        """
         # Compute yaw from quaternion
         q = msg.pose.pose.orientation
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
@@ -493,7 +629,18 @@ class AutoDriveNode(Node):
         self.speed_odom = msg.twist.twist.linear.x  # used by U-turn logic
 
     def initiate_u_turn(self):
-        """Start the U-turn procedure. Let the detection node know to disable detections."""
+        """
+        Starts the U-turn maneuver and disables object detection.
+
+        Preconditions:
+            - Called only when a U-turn is required and not already active.
+
+        Postconditions:
+            - u_turn_state is set to 'approach', object detection is disabled, and initial yaw is recorded.
+
+        Rep invariant:
+            - u_turn_active is True when U-turn starts.
+        """
         print("Initiating U-turn. Disabling object detection now.")
         self.u_turn_active = True
         # Publish enable_detection = False
@@ -507,8 +654,16 @@ class AutoDriveNode(Node):
 
     def handle_u_turn(self, scan_msg):
         """
-        Called inside scan_callback whenever self.u_turn_active = True.
-        We run the U-turn state machine, then re-enable detection when done.
+        Executes the appropriate U-turn state logic based on the current state.
+
+        Preconditions:
+            - self.u_turn_active is True.
+
+        Postconditions:
+            - Calls one of the U-turn subroutines and eventually re-enables detection.
+
+        Rep invariant:
+            - Transitions between U-turn states follow a valid order.
         """
         if self.u_turn_state == "approach":
             self.u_turn_approach(scan_msg)
@@ -527,7 +682,18 @@ class AutoDriveNode(Node):
         #     self.u_turn_wall_follow(scan_msg)
 
     def u_turn_approach(self, scan_msg: LaserScan):
-        # Example approach logic ...
+        """
+        Approaches the side wall and evaluates track width to decide turn method.
+
+        Preconditions:
+            - scan_msg is a valid LaserScan message.
+
+        Postconditions:
+            - Sets next U-turn state to either 'u_turn' or 'three_point_turn'.
+
+        Rep invariant:
+            - Steering commands are safe and respect distance from wall.
+        """
         right_distance = self.get_range(scan_msg, -90)
         print(f"U-turn approach. Right distance: {right_distance:.2f}")
         # Just an example of controlling steering ...
@@ -549,6 +715,18 @@ class AutoDriveNode(Node):
                 self.u_turn_state = "u_turn"
 
     def u_turn_turn(self, scan_msg: LaserScan):
+        """
+        Performs a simple 180-degree U-turn using continuous left turns.
+
+        Preconditions:
+            - scan_msg is a valid LaserScan message.
+
+        Postconditions:
+            - Transitions to 'wall_follow' state once a ~180° turn is detected.
+
+        Rep invariant:
+            - Turn is completed when yaw change ≈ π.
+        """
         left_dist = self.get_range(scan_msg, 90)
         print(f"U-turn in progress. Left dist: {left_dist:.2f}")
 
@@ -562,7 +740,19 @@ class AutoDriveNode(Node):
             self.u_turn_state = "wall_follow"
 
     def u_turn_three_point_turn(self, scan_msg: LaserScan):
-        # Example for multi-phase reversing, etc.
+        """
+        Executes a multi-phase three-point turn based on yaw and position feedback.
+
+        Preconditions:
+            - scan_msg is a valid LaserScan message.
+            - turn_phase is set (1, 2, or 3).
+
+        Postconditions:
+            - Advances turn phase or transitions to 'wall_follow' after final phase.
+
+        Rep invariant:
+            - turn_phase progresses in order and yaw/position updates guide state.
+        """
         if self.turn_phase == 1:
             # Phase 1: forward left
             self.publish_control(1.0, 0.5)  # steer left
@@ -601,7 +791,18 @@ class AutoDriveNode(Node):
                     self.u_turn_state = "wall_follow"
 
     def u_turn_wall_follow(self, scan_msg: LaserScan):
-        # After finishing the turn, we do short wall follow, then re-enable detection
+        """
+        Finalizes U-turn with wall following and re-enables object detection.
+
+        Preconditions:
+            - scan_msg is a valid LaserScan message.
+
+        Postconditions:
+            - Sets u_turn_active to False and re-enables detection.
+
+        Rep invariant:
+            - Control logic ensures safe follow distance before reactivation.
+        """
         error = self.get_ut_error(scan_msg)
         angle = self.ut_pid_control(error)
         self.publish_control(angle, 0.5)
@@ -620,6 +821,19 @@ class AutoDriveNode(Node):
     # U-turn Helpers
     ############
     def get_range(self, scan_msg, angle_deg):
+        """
+        Returns the LiDAR range value at a given angle in degrees.
+
+        Preconditions:
+            - scan_msg is a valid LaserScan.
+            - angle_deg is within valid angular bounds of the scan.
+
+        Postconditions:
+            - Returns float value representing distance or inf if out of bounds.
+
+        Rep invariant:
+            - Index computations stay within scan_msg range limits.
+        """
         angle_rad = math.radians(angle_deg)
         if angle_rad < scan_msg.angle_min or angle_rad > scan_msg.angle_max:
             return float('inf')
@@ -629,7 +843,18 @@ class AutoDriveNode(Node):
         return scan_msg.ranges[idx]
 
     def get_ut_error(self, scan_msg):
-        # simplistic example
+        """
+        Computes lateral error for wall following during U-turn based on LiDAR angles.
+
+        Preconditions:
+            - scan_msg contains valid range data.
+
+        Postconditions:
+            - Returns signed float error value representing distance from desired track.
+
+        Rep invariant:
+            - Uses consistent alpha-angle method with forward projection.
+        """
         a = self.get_range(scan_msg, -45)
         b = self.get_range(scan_msg, -90)
         theta = math.radians(45)
@@ -640,12 +865,36 @@ class AutoDriveNode(Node):
         return self.desired_distance - D_t1
 
     def ut_pid_control(self, error):
+        """
+        PID controller for adjusting angle during U-turn wall follow.
+
+        Preconditions:
+            - error is a float representing deviation from desired path.
+
+        Postconditions:
+            - Returns float angle correction using PID logic.
+
+        Rep invariant:
+            - Controller state (integral, derivative) is updated consistently.
+        """
         self.ut_integral += error
         derivative = error - self.ut_prev_error
         self.ut_prev_error = error
         return self.ut_kp*error + self.ut_ki*self.ut_integral + self.ut_kd*derivative
 
     def normalize_angle(self, angle):
+        """
+        Wraps an angle to the range [-π, π].
+
+        Preconditions:
+            - angle is a float in radians.
+
+        Postconditions:
+            - Returns angle within bounded range.
+
+        Rep invariant:
+            - Output always lies in [-π, π].
+        """
         while angle > math.pi:
             angle -= 2*math.pi
         while angle < -math.pi:

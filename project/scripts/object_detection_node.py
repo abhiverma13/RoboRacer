@@ -15,6 +15,13 @@ import time
 from ultralytics import YOLO
 
 class ObjectDetectionNode(Node):
+    """
+    Node that handles:
+      - YOLO detection
+      - Average depth calculation
+      - Image display
+    """
+
     def __init__(self):
         super().__init__('object_detection_node')
         
@@ -70,7 +77,18 @@ class ObjectDetectionNode(Node):
         print("ObjectDetectionNode initialized.")
 
     def enable_detection_callback(self, msg: Bool):
-        """Pause or resume detections based on this Boolean topic."""
+        """
+        Enables or disables detection based on a Boolean topic.
+
+        Preconditions:
+            - msg is a valid Bool message.
+
+        Postconditions:
+            - self.enable_detection is updated to reflect the message data.
+
+        Rep invariant:
+            - enable_detection reflects latest control input from topic.
+        """
         self.enable_detection = msg.data
         if not self.enable_detection:
             print("Detection is now DISABLED (e.g., during U-turn).")
@@ -78,7 +96,18 @@ class ObjectDetectionNode(Node):
             print("Detection is now ENABLED.")
 
     def rgb_callback(self, msg: Image):
-        """Callback for the RGB camera."""
+        """
+        Callback for processing incoming RGB image data.
+
+        Preconditions:
+            - msg is a valid Image message with BGR encoding.
+
+        Postconditions:
+            - latest_rgb is updated and image is passed to processing if depth also available.
+
+        Rep invariant:
+            - Image format is converted to float32 for model input.
+        """
         try:
             rgb_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except CvBridgeError as e:
@@ -92,7 +121,18 @@ class ObjectDetectionNode(Node):
         self.process_and_annotate_images()
 
     def depth_callback(self, msg: Image):
-        """Callback for the Depth camera."""
+        """
+        Callback for processing incoming depth image data.
+
+        Preconditions:
+            - msg is a valid Image message with depth encoding.
+
+        Postconditions:
+            - latest_depth is updated and image is passed to processing if RGB also available.
+
+        Rep invariant:
+            - Depth image values are float32 and stored for paired processing.
+        """        
         try:
             depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
         except CvBridgeError as e:
@@ -106,6 +146,20 @@ class ObjectDetectionNode(Node):
         self.process_and_annotate_images()
         
     def process_and_annotate_images(self):
+        """
+        Combines RGB and depth images and runs YOLO detection pipeline.
+
+        Preconditions:
+            - latest_rgb and latest_depth are non-null.
+            - Detection is currently enabled.
+
+        Postconditions:
+            - Detected objects are passed to annotation and publishing.
+            - latest_rgb and latest_depth are reset to None.
+
+        Rep invariant:
+            - Inference only occurs when both image types are available.
+        """
         if (self.latest_rgb is not None) and (self.latest_depth is not None) and self.enable_detection:
             rgb_img = self.latest_rgb.copy()
             depth_img = self.latest_depth.copy()
@@ -120,6 +174,19 @@ class ObjectDetectionNode(Node):
             self.latest_depth = None  # Reset to avoid reprocessing
 
     def zoom_in_image(self, image, zoom_factor):
+        """
+        Zooms in on a given image by cropping around its center.
+
+        Preconditions:
+            - image is a 2D or 3D NumPy array.
+            - zoom_factor is a float > 1.0.
+
+        Postconditions:
+            - Returns resized zoomed-in version of original image.
+
+        Rep invariant:
+            - Output shape matches input dimensions.
+        """
         h, w = image.shape[:2]
         center_x, center_y = w // 2, h // 2
 
@@ -137,6 +204,20 @@ class ObjectDetectionNode(Node):
         return zoomed
 
     def annotate_and_display(self, rgb_img, depth_img, detections):
+        """
+        Draws bounding boxes and publishes detected signs with depth information.
+
+        Preconditions:
+            - rgb_img and depth_img are valid image arrays.
+            - detections is a list of YOLO Box objects.
+
+        Postconditions:
+            - Boxes are drawn and labels are printed.
+            - Published messages to /detected_sign with label|depth format.
+
+        Rep invariant:
+            - Only objects above confidence threshold are considered.
+        """
         object_count = 0
         detection_results = []  # For printing
         found = False
@@ -227,11 +308,36 @@ class ObjectDetectionNode(Node):
                 print(f"{res['class']} - {int(res['confidence'] * 100)}% - Avg Depth: {res['avg_depth']:.2f} m - BBox: {res['bbox']}")
 
     def colorize_depth(self, depth_image):
+        """
+        Applies a color map to normalized depth data for visualization.
+
+        Preconditions:
+            - depth_image is a 2D NumPy array of float values.
+
+        Postconditions:
+            - Returns a 3-channel color image (uint8) representing depth.
+
+        Rep invariant:
+            - Output uses JET colormap on normalized input.
+        """
         norm = cv2.normalize(depth_image, None, 0, 255, cv2.NORM_MINMAX)
         norm = np.uint8(norm)
         return cv2.applyColorMap(norm, cv2.COLORMAP_JET)
 
     def get_average_depth(self, depth_image, box):
+        """
+        Computes the average depth in a bounding box region.
+
+        Preconditions:
+            - depth_image is a 2D NumPy array.
+            - box is a 4-tuple of integers (x1, y1, x2, y2).
+
+        Postconditions:
+            - Returns average depth value in meters for the region.
+
+        Rep invariant:
+            - Region is clipped to fit image bounds.
+        """
         x1, y1, x2, y2 = map(int, box)
         h, w = depth_image.shape
 
