@@ -1,6 +1,6 @@
 Table of contents
 
-Describe project, car, f1tenth, purpose
+Describe project, car, f1tenth (aka roboracer), purpose
 
 Describe package structure
 
