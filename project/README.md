@@ -7,7 +7,7 @@ This repository contains all code and assets for our autonomous F1TENTH vehicle 
 ## Project Structure
 
 ```
-milestone5/
+project/
 ├── scripts/
 │   ├── auto_drive_node.py           # Handles navigation, sign-triggered behaviors (e.g., U-turn, stop)
 │   ├── object_detection_node.py     # Runs YOLO11s for real-time traffic sign detection
