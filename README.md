@@ -133,7 +133,7 @@ python3 auto_drive_node.py
 
 ## 🙌 Acknowledgments
 
-- Team A3 Redbull: Abhi Verma, Ayden Bauyon, Jason Hs, Matthew Fung, Noah Ndambuki, Armaan Braich
+- Team A3 Redbull: Abhi Verma, Ayden Bauyon, Jason Hsu, Matthew Fung, Noah Ndambuki, Armaan Braich
 - CPEN 391, University of British Columbia
 - F1TENTH and Jetson development community
 
